@@ -22,7 +22,7 @@ from nanokvm.client import (
     NanoKVMClient,
     NanoKVMError,
 )
-from nanokvm.models import GetCdRomRsp, GetInfoRsp, GetMountedImageRsp, HidMode
+from nanokvm.models import GetCdRomRsp, GetInfoRsp, GetMountedImageRsp, GetVersionRsp, HidMode
 
 from .const import (
     CONF_SSL_FINGERPRINT,
@@ -40,7 +40,7 @@ _LOGGER = logging.getLogger(__name__)
 _UPDATE_MAX_ATTEMPTS = 3
 _UPDATE_RETRY_DELAY_SECONDS = 1
 _UPDATE_TIMEOUT_SECONDS = 60
-_APP_VERSION_TIMEOUT_SECONDS = 45
+_APP_VERSION_REQUEST_TIMEOUT_SECONDS = 45
 
 
 def _is_auth_failure(error: Exception) -> bool:
@@ -299,18 +299,37 @@ class NanoKVMDataUpdateCoordinator(DataUpdateCoordinator):
         self.hid_mode = await self.client.get_hid_mode()
         self.oled_info = await self.client.get_oled_info()
         self.wifi_status = await self.client.get_wifi_status()
-        try:
-            async with async_timeout.timeout(_APP_VERSION_TIMEOUT_SECONDS):
-                self.application_version_info = await self.client.get_application_version()
-        except asyncio.TimeoutError:
-            _LOGGER.warning(
-                "Timed out fetching application version from NanoKVM (device may have no internet access)"
-            )
-            self.application_version_info = None
+        self.application_version_info = await self._async_fetch_app_version()
         self.hdmi_state = await self.client.get_hdmi_state()
         self.mouse_jiggler_state = await self.client.get_mouse_jiggler_state()
         self.swap_size = await self.client.get_swap_size()
         self.tailscale_status = await self.client.get_tailscale_status()
+
+    async def _async_fetch_app_version(self) -> GetVersionRsp | None:
+        """Fetch application version using a dedicated client with extended request timeout.
+
+        get_application_version() triggers a server-side call to a remote API.
+        On devices without internet access the server may block for up to 30 s
+        before responding, so a dedicated client with a longer request_timeout is
+        used here to avoid prematurely cancelling that call.
+        """
+        ssl_fingerprint = self.config_entry.data.get(CONF_SSL_FINGERPRINT)
+        version_client = NanoKVMClient(
+            str(self.client.url),
+            token=self.client.token,
+            request_timeout=_APP_VERSION_REQUEST_TIMEOUT_SECONDS,
+            ssl_fingerprint=ssl_fingerprint,
+        )
+        try:
+            async with version_client:
+                return await version_client.get_application_version()
+        except (NanoKVMError, aiohttp.ClientError, asyncio.TimeoutError) as err:
+            _LOGGER.warning(
+                "Failed to fetch application version from NanoKVM: %s "
+                "(device may have no internet access)",
+                err,
+            )
+            return None
 
     async def _async_fetch_storage_data(self) -> None:
         """Fetch storage-specific state (mounted image and CD-ROM mode)."""
