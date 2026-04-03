@@ -41,6 +41,7 @@ _UPDATE_MAX_ATTEMPTS = 3
 _UPDATE_RETRY_DELAY_SECONDS = 1
 _UPDATE_TIMEOUT_SECONDS = 60
 _APP_VERSION_REQUEST_TIMEOUT_SECONDS = 45
+_APP_VERSION_CACHE_SECONDS = 300
 
 
 def _is_auth_failure(error: Exception) -> bool:
@@ -93,6 +94,7 @@ class NanoKVMDataUpdateCoordinator(DataUpdateCoordinator):
         self.ssh_sensors_created = False
         self.ssh_metrics_collector = None
         self.hostname_info = None
+        self._app_version_last_fetched: datetime.datetime | None = None
 
         super().__init__(
             hass,
@@ -312,7 +314,19 @@ class NanoKVMDataUpdateCoordinator(DataUpdateCoordinator):
         On devices without internet access the server may block for up to 30 s
         before responding, so a dedicated client with a longer request_timeout is
         used here to avoid prematurely cancelling that call.
+
+        The result is cached for _APP_VERSION_CACHE_SECONDS to avoid creating a
+        new client session and making a slow remote round-trip on every poll cycle.
         """
+        now = datetime.datetime.now()
+        if (
+            self.application_version_info is not None
+            and self._app_version_last_fetched is not None
+            and (now - self._app_version_last_fetched).total_seconds()
+            < _APP_VERSION_CACHE_SECONDS
+        ):
+            return self.application_version_info
+
         ssl_fingerprint = self.config_entry.data.get(CONF_SSL_FINGERPRINT)
         version_client = NanoKVMClient(
             str(self.client.url),
@@ -322,13 +336,16 @@ class NanoKVMDataUpdateCoordinator(DataUpdateCoordinator):
         )
         try:
             async with version_client:
-                return await version_client.get_application_version()
+                result = await version_client.get_application_version()
+            self._app_version_last_fetched = now
+            return result
         except (NanoKVMError, aiohttp.ClientError, asyncio.TimeoutError) as err:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "Failed to fetch application version from NanoKVM: %s "
                 "(device may have no internet access)",
                 err,
             )
+            self._app_version_last_fetched = now
             return None
 
     async def _async_fetch_storage_data(self) -> None:
