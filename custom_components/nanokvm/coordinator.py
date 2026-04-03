@@ -39,7 +39,8 @@ _LOGGER = logging.getLogger(__name__)
 
 _UPDATE_MAX_ATTEMPTS = 3
 _UPDATE_RETRY_DELAY_SECONDS = 1
-_UPDATE_TIMEOUT_SECONDS = 10
+_UPDATE_TIMEOUT_SECONDS = 60
+_APP_VERSION_TIMEOUT_SECONDS = 45
 
 
 def _is_auth_failure(error: Exception) -> bool:
@@ -298,7 +299,14 @@ class NanoKVMDataUpdateCoordinator(DataUpdateCoordinator):
         self.hid_mode = await self.client.get_hid_mode()
         self.oled_info = await self.client.get_oled_info()
         self.wifi_status = await self.client.get_wifi_status()
-        self.application_version_info = await self.client.get_application_version()
+        try:
+            async with async_timeout.timeout(_APP_VERSION_TIMEOUT_SECONDS):
+                self.application_version_info = await self.client.get_application_version()
+        except asyncio.TimeoutError:
+            _LOGGER.warning(
+                "Timed out fetching application version from NanoKVM (device may have no internet access)"
+            )
+            self.application_version_info = None
         self.hdmi_state = await self.client.get_hdmi_state()
         self.mouse_jiggler_state = await self.client.get_mouse_jiggler_state()
         self.swap_size = await self.client.get_swap_size()
