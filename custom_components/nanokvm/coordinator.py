@@ -42,6 +42,7 @@ _UPDATE_RETRY_DELAY_SECONDS = 1
 _UPDATE_TIMEOUT_SECONDS = 60
 _APP_VERSION_REQUEST_TIMEOUT_SECONDS = 45
 _APP_VERSION_CACHE_SECONDS = 300
+_APP_VERSION_FAILURE_CACHE_SECONDS = 60
 
 
 def _is_auth_failure(error: Exception) -> bool:
@@ -315,15 +316,19 @@ class NanoKVMDataUpdateCoordinator(DataUpdateCoordinator):
         before responding, so a dedicated client with a longer request_timeout is
         used here to avoid prematurely cancelling that call.
 
-        The result is cached for _APP_VERSION_CACHE_SECONDS to avoid creating a
-        new client session and making a slow remote round-trip on every poll cycle.
+        The result is cached for _APP_VERSION_CACHE_SECONDS (success) or
+        _APP_VERSION_FAILURE_CACHE_SECONDS (failure) to avoid creating a new
+        client session and making a slow remote round-trip on every poll cycle.
         """
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.UTC)
+        cache_ttl = (
+            _APP_VERSION_CACHE_SECONDS
+            if self.application_version_info is not None
+            else _APP_VERSION_FAILURE_CACHE_SECONDS
+        )
         if (
-            self.application_version_info is not None
-            and self._app_version_last_fetched is not None
-            and (now - self._app_version_last_fetched).total_seconds()
-            < _APP_VERSION_CACHE_SECONDS
+            self._app_version_last_fetched is not None
+            and (now - self._app_version_last_fetched).total_seconds() < cache_ttl
         ):
             return self.application_version_info
 
